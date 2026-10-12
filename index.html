@@ -1,0 +1,615 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>AI Video Book Scanner & eBook Exporter</title>
+  <meta name="description" content="동영상 또는 실시간 카메라로 책 넘김을 감지하여 자동 캡처, OCR 텍스트 인식, 검색 가능한 고품질 다중 페이지 PDF 및 EPUB 이북을 생성하고 구글 드라이브 BOOK 폴더로 자동 저장하는 스마트 북 스캐너">
+  
+  <!-- iOS Web App Support -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="BookScanner">
+  <meta name="format-detection" content="telephone=no">
+
+  <!-- Google Fonts: Inter & Outfit -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
+
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+
+  <!-- jsPDF v2.5.1 -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+  <!-- Tesseract.js v5 -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+
+  <!-- JSZip (for multi-image & EPUB export) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
+  <!-- Google Identity Services (GIS) for Google Drive API -->
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+
+  <!-- Stylesheet -->
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body class="dark-theme">
+  <!-- Top Application Bar -->
+  <header class="app-header">
+    <div class="header-brand">
+      <div class="brand-logo-icon">
+        <i data-lucide="book-open-check"></i>
+      </div>
+      <div class="brand-text">
+        <h1>AI Video Book Scanner</h1>
+        <span class="brand-subtitle">Smart Page-Turn CV & eBook Studio</span>
+      </div>
+    </div>
+
+    <div class="header-actions">
+      <div class="detection-badge state-standby" id="globalStateBadge">
+        <span class="status-dot"></span>
+        <span id="globalStateText">대기 중 (Standby)</span>
+      </div>
+      
+      <button class="btn btn-ghost" id="btnSettings" title="환경설정 (Settings)">
+        <i data-lucide="settings"></i>
+        <span>설정</span>
+      </button>
+
+      <button class="btn btn-ghost" id="btnVirtualBook" title="가상 책 넘김 시뮬레이터 (Virtual Book Demo)">
+        <i data-lucide="sparkles"></i>
+        <span class="hide-mobile-text">데모 시뮬레이터</span>
+      </button>
+
+      <button class="btn btn-primary" id="btnExportPdfTop" disabled title="선택된 페이지들을 PDF로 내보내기">
+        <i data-lucide="file-down"></i>
+        <span>PDF (<span class="page-count-badge">0</span>)</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Mobile View Switcher Tab Bar (Visible on Mobile/Tablet) -->
+  <nav class="mobile-view-tabs" id="mobileViewTabs">
+    <button class="mobile-tab-btn active" id="tabMobileScanner" data-view="scanner">
+      <i data-lucide="camera"></i>
+      <span>카메라 스캐너</span>
+    </button>
+    <button class="mobile-tab-btn" id="tabMobileGallery" data-view="gallery">
+      <i data-lucide="book-marked"></i>
+      <span>스캔 서고 (<span class="page-count-badge">0</span>)</span>
+    </button>
+  </nav>
+
+  <!-- Main 2-Column Workspace -->
+  <main class="app-main">
+    <!-- Left Column: Video Ingestion & CV Auto-Scanner -->
+    <section class="scanner-column">
+      <div class="card viewfinder-card">
+        <!-- Viewfinder Header Toolbar -->
+        <div class="card-toolbar">
+          <div class="source-selector-group">
+            <button class="tab-btn active" id="tabSourceCamera" data-source="camera">
+              <i data-lucide="camera"></i> 카메라 스트림
+            </button>
+            <button class="tab-btn" id="tabSourceVideo" data-source="video">
+              <i data-lucide="video"></i> 동영상 파일
+            </button>
+          </div>
+
+          <div class="toolbar-actions">
+            <!-- Camera Selection / Flip / Torch -->
+            <button class="icon-btn" id="btnToggleTorch" title="플래시라이트 토치 켜기/끄기">
+              <i data-lucide="flashlight"></i>
+            </button>
+            <button class="icon-btn" id="btnFlipCamera" title="전면/후면 카메라 전환">
+              <i data-lucide="refresh-cw"></i>
+            </button>
+            <button class="icon-btn" id="btnToggleGuide" title="가이드라인 켜기/끄기">
+              <i data-lucide="scan"></i>
+            </button>
+            <button class="icon-btn" id="btnToggleSound" title="캡처 사운드 켜기/끄기">
+              <i data-lucide="volume-2"></i>
+            </button>
+          </div>
+        </div>
+
+        <!-- Viewfinder Screen Container -->
+        <div class="viewfinder-viewport" id="viewportContainer">
+          <!-- Live Video Element -->
+          <video id="videoElement" autoplay playsinline webkit-playsinline muted></video>
+
+          <!-- Virtual Book Canvas (for demo simulation) -->
+          <canvas id="virtualBookCanvas" class="hidden"></canvas>
+
+          <!-- Mobile Floating Shutter Button -->
+          <button class="mobile-shutter-fab" id="btnMobileShutter" title="모바일 터치 즉시 캡처">
+            <i data-lucide="camera"></i>
+          </button>
+
+          <!-- Central Book Guideline Overlay -->
+          <div class="guideline-overlay" id="guidelineOverlay">
+            <div class="guide-box" id="guideBox">
+              <div class="corner corner-tl"></div>
+              <div class="corner corner-tr"></div>
+              <div class="corner corner-bl"></div>
+              <div class="corner corner-br"></div>
+              <div class="guide-spine"></div>
+              <div class="guide-hint">책을 이 영역 안에 맞춰주세요</div>
+              <div class="scan-light-bar" id="scanLightBar"></div>
+            </div>
+          </div>
+
+          <!-- Flash Pulse Glow on Keyframe Capture -->
+          <div class="capture-flash" id="captureFlash"></div>
+
+          <!-- Video Upload Drop Overlay (Visible when video mode selected and no file) -->
+          <div class="video-dropzone hidden" id="videoDropzone">
+            <i data-lucide="upload-cloud" class="dropzone-icon"></i>
+            <h3>책 넘김 동영상 파일 선택 또는 드래그</h3>
+            <p>MP4, WEBM, MOV 포맷 지원 (스마트폰으로 책 넘기며 촬영한 영상)</p>
+            <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; justify-content: center;">
+              <label class="btn btn-primary upload-btn-label" style="cursor: pointer;" title="아이폰 기본 카메라 앱으로 책 넘김 영상 직접 촬영">
+                <i data-lucide="camera"></i> 📱 아이폰 카메라로 지금 촬영
+                <input type="file" id="mobileCameraDirectInput" accept="video/*" capture="environment" hidden>
+              </label>
+              <label class="btn btn-secondary upload-btn-label">
+                <i data-lucide="folder-open"></i> 영상 파일 열기
+                <input type="file" id="videoFileInput" accept="video/mp4,video/webm,video/quicktime,video/mov,video/*" hidden>
+              </label>
+            </div>
+          </div>
+
+          <!-- Stream Inactive / Permission Prompt Screen -->
+          <div class="stream-placeholder" id="streamPlaceholder">
+            <i data-lucide="camera-off" class="placeholder-icon"></i>
+            <h3>카메라가 연결되지 않았습니다</h3>
+            <p>아래 버튼을 눌러 실시간 카메라를 시작하거나, 아이폰 카메라로 직접 촬영해 보세요.</p>
+            <div style="display: flex; gap: 0.65rem; flex-wrap: wrap; justify-content: center; margin-top: 0.25rem;">
+              <button class="btn btn-primary" id="btnStartCamera">
+                <i data-lucide="video"></i> 실시간 카메라 시작
+              </button>
+              <label class="btn btn-secondary upload-btn-label" style="cursor: pointer;" title="아이폰 기본 카메라 앱을 열어 책 넘김 영상 즉시 촬영">
+                <i data-lucide="camera"></i> 📱 아이폰으로 직접 촬영
+                <input type="file" id="mobileCameraCaptureInput" accept="video/*" capture="environment" hidden>
+              </label>
+              <button class="btn btn-ghost" id="btnPlaceholderDemo">
+                <i data-lucide="sparkles"></i> 가상 책 넘김 데모
+              </button>
+            </div>
+          </div>
+
+          <!-- Video Playback Scrub Bar (when playing uploaded video) -->
+          <div class="video-playback-hud hidden" id="videoPlaybackHud">
+            <button class="hud-btn" id="btnVideoPlayPause">
+              <i data-lucide="play" id="iconPlayPause"></i>
+            </button>
+            <span class="hud-time" id="lblVideoTime">00:00 / 00:00</span>
+            <input type="range" class="hud-seeker" id="videoSeeker" min="0" max="100" value="0" step="0.1">
+            <select class="hud-speed-select" id="videoSpeedSelect" title="스캔 재생 속도">
+              <option value="0.5">0.5x</option>
+              <option value="1" selected>1.0x (기본)</option>
+              <option value="1.5">1.5x (빠르게)</option>
+              <option value="2">2.0x (초고속)</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Real-time Computer Vision Motion & Stability Meter -->
+        <div class="cv-diagnostics-bar">
+          <div class="meter-col">
+            <div class="meter-label-row">
+              <span class="meter-title"><i data-lucide="activity"></i> 프레임 모션 지수</span>
+              <span class="meter-value" id="valMotionPercent">0.0%</span>
+            </div>
+            <div class="meter-track">
+              <div class="meter-fill" id="barMotionFill" style="width: 0%;"></div>
+              <div class="meter-threshold-line" id="lineMotionThreshold" style="left: 12%;" title="모션 감지 임계치"></div>
+            </div>
+          </div>
+
+          <div class="meter-col">
+            <div class="meter-label-row">
+              <span class="meter-title"><i data-lucide="timer"></i> 페이지 정지 안정도 (Hold)</span>
+              <span class="meter-value" id="valStabilityPercent">0%</span>
+            </div>
+            <div class="meter-track">
+              <div class="meter-fill fill-stability" id="barStabilityFill" style="width: 0%;"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Capture & Detection Controls Panel -->
+        <div class="scanner-controls-panel">
+          <div class="control-row-primary">
+            <!-- Auto Detection Toggle -->
+            <label class="toggle-switch-label" title="페이지 넘김 및 정지 시 자동 캡처">
+              <input type="checkbox" id="chkAutoDetect" checked>
+              <span class="switch-slider"></span>
+              <span class="toggle-text">
+                <strong>자동 스캔 (Auto-CV)</strong>
+                <small id="lblAutoStatus">넘김 감지 대기</small>
+              </span>
+            </label>
+
+            <!-- Manual Snap Button -->
+            <button class="btn btn-secondary btn-snap" id="btnManualSnap" title="현재 프레임 즉시 캡처 (단축키: 스페이스바)">
+              <i data-lucide="aperture"></i>
+              <span>수동 캡처 (Space)</span>
+            </button>
+          </div>
+
+          <!-- Sensitivity & CV Adjustment Accordion -->
+          <details class="cv-settings-details" open>
+            <summary class="details-summary">
+              <i data-lucide="sliders"></i>
+              <span>CV 감도 & 타이머 미세 조정 (Detection Parameters)</span>
+              <i data-lucide="chevron-down" class="summary-arrow"></i>
+            </summary>
+            
+            <div class="cv-settings-grid">
+              <div class="setting-item">
+                <div class="setting-label">
+                  <span>모션 감도 임계치</span>
+                  <strong id="lblThresholdVal">12%</strong>
+                </div>
+                <input type="range" id="rngMotionThreshold" min="3" max="30" value="12" step="1">
+                <small class="setting-hint">낮을수록 미세한 손 움직임도 민감하게 감지</small>
+              </div>
+
+              <div class="setting-item">
+                <div class="setting-label">
+                  <span>정지 유지 시간 (Hold)</span>
+                  <strong id="lblStabilityVal">650ms</strong>
+                </div>
+                <input type="range" id="rngStabilityDuration" min="300" max="1500" value="650" step="50">
+                <small class="setting-hint">페이지가 흔들림 없이 멈춰있는 최소 시간</small>
+              </div>
+
+              <div class="setting-item">
+                <div class="setting-label">
+                  <span>중복 방지 쿨다운 (Cooldown)</span>
+                  <strong id="lblCooldownVal">1.8초</strong>
+                </div>
+                <input type="range" id="rngCooldownWindow" min="1000" max="4000" value="1800" step="100">
+                <small class="setting-hint">한 페이지 캡처 후 다음 캡처까지의 최소 지연</small>
+              </div>
+
+              <div class="setting-item">
+                <div class="setting-label">
+                  <span>스캔 영역 (ROI)</span>
+                </div>
+                <div class="checkbox-group">
+                  <label class="checkbox-label">
+                    <input type="checkbox" id="chkRoiOnly" checked>
+                    <span>가이드 박스 내부만 분석</span>
+                  </label>
+                  <label class="checkbox-label">
+                    <input type="checkbox" id="chkCropToGuide" checked>
+                    <span>가이드 영역에 맞춰 자동 크롭</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+          </details>
+        </div>
+      </div>
+    </section>
+
+    <!-- Right Column: Captured Pages Gallery & PDF Pipeline -->
+    <section class="gallery-column">
+      <!-- Gallery Top Header Bar -->
+      <div class="gallery-header-card">
+        <div class="gallery-title-group">
+          <h2>스캔된 페이지 서고</h2>
+          <span class="badge badge-counter"><span id="lblPageTotal">0</span> 페이지</span>
+        </div>
+
+        <div class="gallery-action-group">
+          <!-- Batch Filter Dropdown -->
+          <div class="dropdown-wrapper">
+            <select class="select-field" id="selectGlobalFilter" title="모든 페이지에 필터 적용">
+              <option value="none">필터 일괄 적용...</option>
+              <option value="doc_clean">문서 정리 (고대비 흑백)</option>
+              <option value="contrast_boost">명암 선명화 (대비 강조)</option>
+              <option value="grayscale">부드러운 그레이스케일</option>
+              <option value="enhanced_color">컬러 강화 (선명한 색상)</option>
+              <option value="original">원본 복원</option>
+            </select>
+          </div>
+
+          <!-- Batch OCR Button -->
+          <button class="btn btn-secondary" id="btnBatchOcr" disabled title="모든 페이지의 텍스트 인식">
+            <i data-lucide="scan-text"></i>
+            <span>전체 OCR 인식</span>
+          </button>
+
+          <!-- Clear All Button -->
+          <button class="btn btn-ghost-danger" id="btnClearAll" disabled title="모든 스캔 페이지 비우기">
+            <i data-lucide="trash-2"></i>
+            <span>전체 삭제</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Batch OCR / Export Progress Bar -->
+      <div class="batch-progress-card hidden" id="batchProgressCard">
+        <div class="progress-info-row">
+          <span class="progress-title" id="lblProgressTitle"><i data-lucide="loader-2" class="spin"></i> OCR 텍스트 인식 진행 중...</span>
+          <span class="progress-stats" id="lblProgressStats">0 / 0 (0%)</span>
+        </div>
+        <div class="progress-bar-track">
+          <div class="progress-bar-fill" id="batchProgressBarFill" style="width: 0%;"></div>
+        </div>
+      </div>
+
+      <!-- Captured Pages Grid / List -->
+      <div class="pages-grid-container" id="pagesGridContainer">
+        <!-- Empty Placeholder -->
+        <div class="empty-gallery-state" id="emptyGalleryState">
+          <div class="empty-art-icon">
+            <i data-lucide="file-stack"></i>
+          </div>
+          <h3>아직 스캔된 페이지가 없습니다</h3>
+          <p>카메라 앞에서 책 페이지를 넘기거나, 동영상을 재생하세요.<br>자동 컴퓨터 비전 알고리즘이 안정된 순간을 포착하여 고화질 캡처합니다.</p>
+          <div class="empty-tips">
+            <div class="tip-pill"><i data-lucide="check-circle-2"></i> 스페이스바로 수동 캡처 가능</div>
+            <div class="tip-pill"><i data-lucide="check-circle-2"></i> 순서 드래그 앤 드롭 이동</div>
+            <div class="tip-pill"><i data-lucide="check-circle-2"></i> 한/영 Tesseract OCR & PDF 생성</div>
+          </div>
+        </div>
+
+        <!-- Rendered Page Cards go here via JS -->
+        <div class="pages-cards-grid" id="pagesCardsGrid"></div>
+      </div>
+
+      <!-- Bottom Floating Export Bar -->
+      <div class="gallery-bottom-dock">
+        <div class="dock-summary">
+          <div class="dock-summary-text">
+            <strong>총 <span id="lblDockCount">0</span> 페이지 준비됨</strong>
+            <small id="lblDockOcrStats">OCR 완료: 0페이지</small>
+          </div>
+        </div>
+        <div class="dock-buttons">
+          <button class="btn btn-ghost btn-sm" id="btnExportTxt" disabled title="인식된 모든 텍스트 TXT 파일로 다운로드">
+            <i data-lucide="file-text"></i>
+            <span>TXT</span>
+          </button>
+          <button class="btn btn-secondary" id="btnExportEpub" disabled title="전자책 EPUB 파일 다운로드">
+            <i data-lucide="book"></i>
+            <span>EPUB 다운로드</span>
+          </button>
+          <button class="btn btn-secondary" id="btnExportPdf" disabled title="검색 가능한 A4 다중 페이지 PDF 생성">
+            <i data-lucide="file-down"></i>
+            <span>PDF 다운로드</span>
+          </button>
+          <button class="btn btn-primary btn-gdrive" id="btnExportGDrive" disabled title="Google Drive BOOK 폴더로 자동 업로드">
+            <i data-lucide="cloud"></i>
+            <span>Google Drive (BOOK 폴더)</span>
+          </button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Page Detail & Text Viewer / Editor Modal -->
+  <div class="modal-overlay hidden" id="pageModal">
+    <div class="modal-container modal-lg">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <h3 id="modalPageTitle">페이지 1 상세 뷰어 & 텍스트 교정</h3>
+          <span class="badge" id="modalOcrBadge">OCR 완료</span>
+        </div>
+        <button class="icon-btn" id="btnModalClose">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+
+      <div class="modal-body modal-split-view">
+        <!-- Left: Image Preview & Enhancement tools -->
+        <div class="modal-pane modal-pane-image">
+          <div class="image-preview-wrapper">
+            <img id="modalPageImg" src="" alt="스캔 페이지 원본">
+          </div>
+          <div class="image-adjust-toolbar">
+            <button class="btn btn-sm btn-secondary" id="btnModalRotate">
+              <i data-lucide="rotate-cw"></i> 90° 회전
+            </button>
+            <select class="select-field select-sm" id="selectModalFilter">
+              <option value="original">원본</option>
+              <option value="doc_clean">문서 정리 (고대비 흑백)</option>
+              <option value="contrast_boost">대비 강조</option>
+              <option value="grayscale">그레이스케일</option>
+              <option value="enhanced_color">컬러 강화</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Right: Extracted OCR Text Editor -->
+        <div class="modal-pane modal-pane-text">
+          <div class="text-editor-header">
+            <h4><i data-lucide="file-type-2"></i> 인식된 텍스트 내용</h4>
+            <div class="text-editor-actions">
+              <button class="btn btn-sm btn-ghost" id="btnModalReOcr" title="이 페이지만 OCR 재실행">
+                <i data-lucide="refresh-cw"></i> 재인식
+              </button>
+              <button class="btn btn-sm btn-ghost" id="btnModalCopyText" title="텍스트 클립보드 복사">
+                <i data-lucide="copy"></i> 복사
+              </button>
+            </div>
+          </div>
+          <textarea id="txtModalOcrText" class="ocr-textarea" placeholder="OCR 인식 결과가 여기에 표시됩니다. 직접 텍스트를 편집하여 오탈자를 교정할 수 있습니다."></textarea>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-ghost-danger" id="btnModalDeletePage">
+          <i data-lucide="trash-2"></i> 이 페이지 삭제
+        </button>
+        <button class="btn btn-primary" id="btnModalSave">
+          <i data-lucide="check"></i> 변경사항 저장
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings & Configuration Modal -->
+  <div class="modal-overlay hidden" id="settingsModal">
+    <div class="modal-container">
+      <div class="modal-header">
+        <h3><i data-lucide="settings"></i> 환경 설정</h3>
+        <button class="icon-btn" id="btnSettingsClose">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+      <div class="modal-body settings-form">
+        <!-- Google Drive Integration Settings -->
+        <div class="form-group">
+          <label class="form-label" style="display: flex; align-items: center; justify-content: space-between;">
+            <span><i data-lucide="cloud"></i> Google Drive BOOK 폴더 연동</span>
+            <span class="badge" id="badgeGDriveStatus">미연결</span>
+          </label>
+          <small class="form-hint">스캔 완료된 PDF 및 EPUB 파일을 Google Drive의 <strong>'BOOK'</strong> 폴더에 자동 업로드합니다.</small>
+          
+          <!-- Method 1: Google Apps Script (Recommended) -->
+          <div style="background: rgba(99, 102, 241, 0.08); border: 1px solid rgba(99, 102, 241, 0.25); border-radius: 8px; padding: 10px; margin-top: 8px;">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
+              <strong style="color: var(--color-primary-light); font-size: 0.85rem;">
+                <i data-lucide="sparkles"></i> 추천 방식: Google Apps Script(GAS) 웹 앱 URL
+              </strong>
+              <span class="badge" style="background: rgba(99, 102, 241, 0.2); color: #a5b4fc; font-size: 0.7rem;">추천 / 무설정</span>
+            </div>
+            <p style="font-size: 0.75rem; color: var(--color-text-muted); margin-bottom: 6px;">
+              Google Cloud Console 복잡한 설정 없이, 1분 만에 구글 드라이브 'BOOK' 폴더로 즉시 자동 저장됩니다.
+            </p>
+            <input type="url" class="input-field" id="cfgGDriveGasUrl" placeholder="https://script.google.com/macros/s/.../exec">
+            <small class="form-hint">프로젝트 내 <code>google_apps_script/Code.gs</code> 배포 웹 앱 URL을 붙여넣으세요.</small>
+          </div>
+
+          <!-- Method 2: Google Cloud OAuth (Advanced) -->
+          <details style="margin-top: 10px; font-size: 0.8rem; color: var(--color-text-muted);">
+            <summary style="cursor: pointer; padding: 4px 0; color: var(--color-text-secondary); font-weight: 500;">
+              선택 방식: Google Cloud OAuth 2.0 Client ID
+            </summary>
+            <div style="margin-top: 6px;">
+              <input type="text" class="input-field" id="cfgGDriveClientId" placeholder="1234567890-xxx.apps.googleusercontent.com">
+              <small class="form-hint">Google Cloud Console에서 발급받은 웹 앱 Client ID</small>
+              <div style="display: flex; gap: 0.5rem; margin-top: 6px;">
+                <button type="button" class="btn btn-secondary btn-sm" id="btnGDriveConnect">
+                  <i data-lucide="log-in"></i> Google 계정 인증 / 연결
+                </button>
+              </div>
+            </div>
+          </details>
+        </div>
+
+        <hr class="form-divider">
+
+        <!-- EPUB Metadata Settings -->
+        <div class="form-group">
+          <label class="form-label"><i data-lucide="book-open"></i> EPUB 이북 메타데이터</label>
+          <label class="form-label" style="margin-top: 4px; font-size: 0.8rem;">도서 제목 (Title)</label>
+          <input type="text" class="input-field" id="cfgEpubTitle" placeholder="스캔 전자책">
+          
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 6px;">
+            <div>
+              <label class="form-label" style="font-size: 0.8rem;">저자 (Author)</label>
+              <input type="text" class="input-field" id="cfgEpubAuthor" placeholder="AI Video Scanner">
+            </div>
+            <div>
+              <label class="form-label" style="font-size: 0.8rem;">도서 언어 (Language)</label>
+              <select class="select-field" id="cfgEpubLang">
+                <option value="ko" selected>한국어 (Korean)</option>
+                <option value="en">영어 (English)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <hr class="form-divider">
+
+        <!-- OCR Engine Selector -->
+        <div class="form-group">
+          <label class="form-label">OCR 엔진 선택</label>
+          <select class="select-field" id="cfgOcrEngine">
+            <option value="tesseract" selected>Tesseract.js v5 (로컬 클라이언트 완전 무료)</option>
+            <option value="gemini">Google Gemini Vision API (초고속 클라우드 AI)</option>
+          </select>
+        </div>
+
+        <!-- Tesseract Languages -->
+        <div class="form-group" id="cfgTesseractGroup">
+          <label class="form-label">Tesseract 인식 언어</label>
+          <select class="select-field" id="cfgTesseractLang">
+            <option value="kor+eng" selected>한국어 + 영어 (Korean + English)</option>
+            <option value="kor">한국어 전용 (Korean)</option>
+            <option value="eng">영어 전용 (English)</option>
+          </select>
+          <small class="form-hint">첫 실행 시 브라우저에서 언어 데이터(약 15MB)를 1회 캐싱합니다.</small>
+        </div>
+
+        <!-- Gemini API Key (Optional) -->
+        <div class="form-group hidden" id="cfgGeminiGroup">
+          <label class="form-label">Gemini API 키</label>
+          <input type="password" class="input-field" id="cfgGeminiKey" placeholder="AIzaSy...">
+          <small class="form-hint">Google AI Studio에서 발급받은 API 키를 입력하세요. 브라우저 로컬스토리지에만 안전하게 저장됩니다.</small>
+
+          <label class="form-label" style="margin-top: 12px;">Gemini 모델</label>
+          <select class="select-field" id="cfgGeminiModel">
+            <option value="gemini-2.5-flash" selected>Gemini 2.5 Flash (권장 - 빠르고 정확)</option>
+            <option value="gemini-1.5-flash">Gemini 1.5 Flash</option>
+          </select>
+        </div>
+
+        <hr class="form-divider">
+
+        <!-- PDF Export Settings -->
+        <div class="form-group">
+          <label class="form-label">PDF 용지 규격</label>
+          <select class="select-field" id="cfgPdfFormat">
+            <option value="a4" selected>A4 표준 규격 (210 x 297 mm, 세로형)</option>
+            <option value="fit">이미지 원본 비율 자동 맞춤</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">PDF 텍스트 검색 가능화 (Searchable PDF)</label>
+          <div class="checkbox-group">
+            <label class="checkbox-label">
+              <input type="checkbox" id="cfgEmbedSearchableText" checked>
+              <span>PDF 내 검색 가능한 투명 텍스트 레이어 포함</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" id="cfgAppendTranscriptPage">
+              <span>PDF 문서 맨 뒤에 전체 텍스트 전사(Transcript) 부록 페이지 추가</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">PDF 이미지 압축 화질</label>
+          <select class="select-field" id="cfgPdfQuality">
+            <option value="0.92" selected>고품질 (High Quality - 추천)</option>
+            <option value="0.80">표준 (Medium Quality - 용량 절약)</option>
+            <option value="0.65">압축형 (Compact)</option>
+          </select>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" id="btnSettingsSave">
+          <i data-lucide="check"></i> 설정 적용 및 저장
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <!-- Application Modules -->
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

@@ -75,33 +75,45 @@ export class CameraController {
     this.currentSource = 'camera';
     this.currentFacingMode = facingMode;
 
-    const constraints = {
-      audio: false,
-      video: {
-        facingMode: { ideal: facingMode },
-        width: { ideal: 1920, min: 1280 },
-        height: { ideal: 1080, min: 720 },
-      }
-    };
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      throw new Error('이 브라우저에서는 카메라를 사용할 수 없습니다. HTTPS 주소의 Safari에서 열어주세요.');
+    }
 
-    try {
-      this.mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
-      this.video.srcObject = this.mediaStream;
-      await this.video.play();
-      this._updateDevices();
-      return true;
-    } catch (err) {
-      console.warn('High-res camera constraints failed, falling back to basic video:', err);
+    // iOS Safari: playsinline + muted are required for inline autoplay
+    this.video.setAttribute('playsinline', '');
+    this.video.setAttribute('webkit-playsinline', '');
+    this.video.muted = true;
+    this.video.playsInline = true;
+
+    // NOTE: no `min` constraints — iOS throws OverconstrainedError with them
+    const attempts = [
+      { audio: false, video: { facingMode: { ideal: facingMode }, width: { ideal: 1920 }, height: { ideal: 1080 } } },
+      { audio: false, video: { facingMode: facingMode } },
+      { audio: false, video: true },
+    ];
+
+    let lastErr = null;
+    for (const constraints of attempts) {
       try {
-        this.mediaStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        this.mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
         this.video.srcObject = this.mediaStream;
-        await this.video.play();
+        try {
+          await this.video.play();
+        } catch (playErr) {
+          console.warn('video.play() blocked, will retry on user tap:', playErr);
+          const resume = () => { this.video.play().catch(() => {}); };
+          document.addEventListener('touchend', resume, { once: true });
+          document.addEventListener('click', resume, { once: true });
+        }
         this._updateDevices();
         return true;
-      } catch (fallbackErr) {
-        throw fallbackErr;
+      } catch (err) {
+        lastErr = err;
+        console.warn('getUserMedia failed with constraints', constraints, err);
+        if (err && (err.name === 'NotAllowedError' || err.name === 'SecurityError')) break;
       }
     }
+    throw lastErr || new Error('카메라를 시작할 수 없습니다.');
   }
 
   /**
@@ -160,23 +172,50 @@ export class CameraController {
     this.currentSource = 'video';
 
     return new Promise((resolve, reject) => {
-      const url = URL.createObjectURL(file);
-      this.video.srcObject = null;
-      this.video.src = url;
-      this.video.load();
-
-      this.video.onloadedmetadata = () => {
-        this.video.play().then(() => {
-          resolve(true);
-        }).catch(err => {
-          console.warn('Autoplay prevented, awaiting user click:', err);
-          resolve(true);
-        });
+      const video = this.video;
+      let settled = false;
+      const cleanup = () => {
+        video.removeEventListener('loadedmetadata', onReady);
+        video.removeEventListener('loadeddata', onReady);
+        video.removeEventListener('error', onError);
       };
-
-      this.video.onerror = (e) => {
+      const onReady = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        video.play().catch(err => {
+          console.warn('Autoplay prevented, awaiting user tap:', err);
+        });
+        resolve(true);
+      };
+      const onError = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
         reject(new Error('동영상 파일을 재생할 수 없습니다. 지원되는 포맷인지 확인하세요.'));
       };
+
+      // Clear any stale handlers from previous loads
+      video.onloadedmetadata = null;
+      video.onerror = null;
+
+      video.setAttribute('playsinline', '');
+      video.setAttribute('webkit-playsinline', '');
+      video.muted = true;
+      video.playsInline = true;
+
+      video.addEventListener('loadedmetadata', onReady);
+      video.addEventListener('loadeddata', onReady);
+      video.addEventListener('error', onError);
+
+      if (this._objectUrl) URL.revokeObjectURL(this._objectUrl);
+      this._objectUrl = URL.createObjectURL(file);
+      video.srcObject = null;
+      video.src = this._objectUrl;
+      video.load();
+
+      // iOS sometimes doesn't fire metadata events until play() is called
+      video.play().catch(() => {});
     });
   }
 
@@ -395,7 +434,8 @@ export class CameraController {
     if (this.video) {
       this.video.pause();
       this.video.srcObject = null;
-      this.video.src = '';
+      this.video.removeAttribute('src');
+      this.video.load();
       this.video.classList.remove('hidden');
     }
 

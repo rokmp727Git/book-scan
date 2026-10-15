@@ -12,13 +12,14 @@ class App {
     this._initDom();
     this.dom.globalStateBadge.classList.add('state-standby');
     this.dom.globalStateText.textContent = '대기 중 (Standby)';
-    this._loadSettings();
 
-    // Module instances
+    // Module instances (must exist BEFORE _loadSettings, which uses googleDrive)
     this.camera = new CameraController(this.dom.videoElement, this.dom.virtualBookCanvas);
     this.pageStore = new PageStore();
     this.ocrService = new OcrService();
     this.googleDrive = new GoogleDriveService();
+
+    this._loadSettings();
 
     if (this.settings.gdriveClientId) {
       this.googleDrive.setClientId(this.settings.gdriveClientId);
@@ -204,8 +205,9 @@ class App {
   }
 
   _loadSettings() {
-    const saved = localStorage.getItem('ai_book_scanner_settings');
-    this.settings = saved ? JSON.parse(saved) : {
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem('ai_book_scanner_settings') || 'null'); } catch (e) { saved = null; }
+    this.settings = saved || {
       ocrEngine: 'tesseract',
       tesseractLang: 'kor+eng',
       geminiKey: '',
